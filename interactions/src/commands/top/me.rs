@@ -1,31 +1,33 @@
 use std::sync::Arc;
 use twilight_http::Client;
-use twilight_model::application::callback::CallbackData;
+use database::models::config::GuildConfig;
 use database::mongodb::MongoDBConnection;
 use database::redis::RedisConnection;
+use utils::embeds::EmbedBuilder;
+use utils::errors::Error;
 use crate::commands::context::InteractionContext;
-use crate::utilities::embed::text_to_response_embed;
+use crate::commands::ResponseData;
 
-pub async fn run(interaction: InteractionContext, _: MongoDBConnection, redis: RedisConnection, _: Arc<Client>) -> Result<CallbackData, String> {
+pub async fn run(interaction: InteractionContext, _: MongoDBConnection, redis: RedisConnection, _: Arc<Client>, _: GuildConfig) -> ResponseData {
 
     let guild_id = interaction.guild_id.ok_or("Cannot find guild_id")?;
     let user = interaction.user.ok_or("Unknown user")?;
 
     let week_or_day = interaction.command_vec.get(1).cloned()
-        .ok_or("Invalid command".to_string())?;
-    if !["week", "day"].contains(&week_or_day.clone().as_str()) {
-        return Err("Invalid command".to_string())
+        .ok_or("Invalid command")?;
+    if !["week", "day"].contains(&week_or_day.as_str()) {
+        return Err(Error::from("Invalid command"))
     }
 
     let (user_score, user_position) = redis.get_by_user(
         format!("top_{week_or_day}.{guild_id}"), user.id
-    ).map_err(|err| format!("{err}"))?;
+    ).map_err(Error::from)?;
 
     let mut result = format!("You are **{}** with **{user_score}** messages", user_position + 1);
 
     let leaderboard = redis.get_all(
         format!("top_{week_or_day}.{guild_id}"), 3
-    ).map_err(|err| format!("{err}"))?;
+    ).map_err(Error::from)?;
 
     let leaderboard_string = leaderboard.iter().enumerate()
         .map(|(index, top)|
@@ -40,18 +42,23 @@ pub async fn run(interaction: InteractionContext, _: MongoDBConnection, redis: R
     if user_position > 0 {
         let user_after = redis.get_by_position(
             format!("top_{week_or_day}.{guild_id}"), (user_position - 1) as usize
-        ).map_err(|err| format!("{err}"))?.ok_or("There is no user_after")?;
+        ).map_err(Error::from)?.ok_or("There is no user_after")?;
         result = format!("{result}**{user_after}** messages to beat next user\n");
     }
 
     let user_before = redis.get_by_position(
         format!("top_{week_or_day}.{guild_id}"), (user_position + 1) as usize
-    ).map_err(|err| format!("{err}"))?.ok_or("There is no `user_before`")?;
+    ).map_err(Error::from)?.ok_or("There is no `user_before`")?;
     result = format!("{result}**{user_before}** messages for user before (to you)");
 
-    Ok(text_to_response_embed(
-        format!("Top of the {week_or_day} for {}#{}", user.name, user.discriminator),
-        result
+    Ok((
+        EmbedBuilder::new()
+            .title(
+                format!("Top of the {week_or_day} for {}#{}", user.name, user.discriminator)
+            )
+            .description(result)
+            .to_interaction_response_data(false),
+        None
     ))
 
 }
